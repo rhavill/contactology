@@ -1,0 +1,501 @@
+<?php // $Id: //sms/modules/morris/contactology/6/v2012.1/contactology.module#6 $
+
+/**
+ * @file
+ */
+
+/**
+ * Implements hook_menu().
+ */
+function contactology_menu() {
+  $items = array();
+  $items['admin/user/contactology'] = array(
+    'title' => 'Contactology Email Subscription Settings',
+    'description' => 'Configure Contactology email list subscriptions.',
+    'page callback' => 'drupal_get_form',
+    'page arguments' => array('contactology_settings'),
+    'access arguments' => array('administer users'),
+    'file' => 'contactology.admin.inc',
+    'type' => MENU_NORMAL_ITEM,
+  );
+  $items['admin/user/contactology/settings'] = array(
+    'title' => 'Settings',
+    'type' => MENU_DEFAULT_LOCAL_TASK,
+    'weight' => -10,
+  );
+  $items['admin/user/contactology/default-subscriptions'] = array(
+    'title' => 'Default Subscriptions',
+    'page callback' => 'drupal_get_form',
+    'page arguments' => array('contactology_default_subscriptions'),
+    'access arguments' => array('administer users'),
+    'type' => MENU_LOCAL_TASK,
+    'parent' => 'admin/user/contactology',
+    'file' => 'contactology.admin.inc',
+  );
+  $items['admin/user/contactology/custom-fields'] = array(
+    'title' => 'Custom Fields',
+    'page callback' => 'drupal_get_form',
+    'page arguments' => array('contactology_custom_field_settings'),
+    'access arguments' => array('administer users'),
+    'type' => MENU_LOCAL_TASK,
+    'parent' => 'admin/user/contactology',
+    'file' => 'contactology.admin.inc',
+  );
+  $items['user/%user/edit/contactology'] = array(
+    'title' => 'Email Subscriptions',
+    'page callback' => 'contactology_edit_user',
+    'page arguments' => array(1),
+    'access callback' => 'user_edit_access',
+    'access arguments' => array(1),    
+    'type' => MENU_LOCAL_TASK,
+    'weight' => 100,
+  );
+
+  return $items;
+}
+
+/**
+ * Implementation of hook_form_alter.
+ */
+function contactology_form_alter(&$form, &$form_state, $form_id) {
+if ($form_id == 'user_register') {
+    try {
+      $lists = contactology_get_lists();
+    }
+    catch (Exception $e) {
+    }
+    if ($lists) {
+      $form['contactology_subscriptions'] = array(
+        '#type' => 'fieldset',
+        '#title' => t('Email Subscriptions'),
+        '#collapsible' => TRUE,
+        '#collapsed' => FALSE,
+        '#weight' => 21,
+      );
+      foreach ($lists as $id => $list) {
+        $default = variable_get('contactology_default_subscribe'.$id, 0);
+        $form['contactology_subscriptions']["list-$id"] = array(
+          '#type'           => 'checkbox',
+          '#title'          => t('Subscribe to @list emails', array('@list' => $list)),
+          '#default_value'  => $default,
+        );
+      }
+    }
+  }
+  if ($form_id == 'user_register' || $form_id == 'user_profile_form') {
+    // add function to be executed when form has been submitted
+    // make sure our function is executed before any of the other submit
+    // functions
+    if (!empty($form["#submit"])) {
+        array_unshift($form["#submit"], 'contactology_user_profile_submit');
+    }
+    else {
+      $form["#submit"] = array('contactology_user_profile_submit');
+    }
+  }
+}
+
+/**
+ * Submit handler for user registration form and user edit forms.
+ */
+function contactology_user_profile_submit($form, &$form_values) {
+  $lists = array();
+  $subscriptions = array();
+  $contact = array();
+  $field_mappings = variable_get('contactology_field_mappings', array());
+  $custom_fields = array();
+  $update_custom_fields = variable_get('contactology_enable_custom_fields', 0);
+  $update_unsubscribed = variable_get('contactology_unsubscribed_contacts', 0);
+  $custom_fields_have_changed = FALSE;
+  if ($form_values['values']['mail']) {
+    $contact['email'] = $form_values['values']['mail'];
+  }
+  else if ($form_values['values']['_account']->mail) {
+    $contact['email'] = $form_values['values']['_account']->mail;
+  }
+  foreach ($field_mappings as $id => $mapping) {
+    $custom_fields[$mapping['drupal_field']] = $id;  
+  }
+  foreach ($form_values['values'] as $key => $value) {
+    if (substr($key, 0, 5) == 'list-' && $value) {
+      $subscriptions[] = substr($key, 5, strlen($key) - 1);
+    }
+    else if ($update_custom_fields && $value && $custom_fields[$key]) {
+      if ($form_values['values']['_account']->$key && $value != $form_values['values']['_account']->$key) {
+        $custom_fields_have_changed = TRUE;
+      }
+      $contact[$custom_fields[$key]] = $value;
+      if (isset($field_mappings[$custom_fields[$key]]['conversion']) && function_exists('contactology_convert_' . $field_mappings[$custom_fields[$key]]['conversion'])) {
+        $function_name = 'contactology_convert_' . $field_mappings[$custom_fields[$key]]['conversion'];
+        $contact[$custom_fields[$key]] = $function_name($value);
+      }
+    }
+  }
+  if ($form_values['values']['form_id'] == 'user_register' && ($subscriptions || $update_unsubscribed)) {
+    try {
+      $lists = contactology_get_lists();
+    }
+    catch (Exception $e) {
+    }
+    $contactology = contactology_wrapper_object();
+    try {
+      $results = $contactology->Contact_Import( array($contact), 'Drupal', array('listIds' => $subscriptions, 'updateCustomFields' => TRUE) );
+    }
+    catch (Exception $e) {
+    }  
+  }
+  else if($form_values['values']['form_id'] == 'user_profile_form') {
+    // If the email address has changed, update it in Contactology.
+    if ($form_values['values']['_account']->mail && $form_values['values']['mail'] && $form_values['values']['_account']->mail != $form_values['values']['mail']) {
+      $contactology = contactology_wrapper_object();
+      try {
+        $results = $contactology->Contact_Change_Email($form_values['values']['_account']->mail, $form_values['values']['mail']);
+      }
+      catch (Exception $e) {
+      }            
+    }
+    if ($custom_fields_have_changed) {
+      $contactology = contactology_wrapper_object();
+      try {
+        $results = $contactology->Contact_Import( array($contact), 'Drupal', array('updateCustomFields' => TRUE) );
+      }
+      catch (Exception $e) {
+      }
+    }
+  }
+}
+
+/**
+ * Implementation of hook_user().
+ */
+function contactology_user($op, &$edit, &$account, $category = NULL) {
+  switch ($op) {
+    case 'categories':
+      // Create a tab on the user edit page for Contactology subscriptions.
+      return array(
+        array(
+          'name' => 'contactology',
+          'title' => 'Email subscriptions',
+          'weight' => 100,
+        ),
+      );
+  }
+}
+
+function contactology_edit_user($user) {
+  return drupal_get_form('contactology_subscription_form', $user);
+}
+
+/*
+ * Output a form that allows a user to subscribe to email lists.
+ */
+function contactology_subscription_form(&$form_state, $user) {
+  $form = array();
+  try {
+    $subscriptions = contactology_get_subscriptions($user->mail);
+  }
+  catch (Exception $e) {
+    drupal_set_message(t('Unable to load email subscriptions.'), 'error');
+    drupal_goto("user/{$user->uid}/edit");
+  }
+  try {
+    $lists = contactology_get_lists();
+  }
+  catch (Exception $e) {
+    drupal_set_message(t('Error getting email lists. '), 'error');
+    drupal_goto("user/{$user->uid}/edit");
+  }
+  if ($lists) {
+    // Store the user subscriptions in the session so that we do not have to retrieve them from Contactology again after the form is submitted.
+    $_SESSION['contactology_subscriptions'] = $subscriptions;
+    $form['subscriptions'] = array(
+      '#type' => 'fieldset',
+      '#title' => t('Email Subscriptions'),
+      '#description' => t('Please select the emails you want to receive and then click "Save".'),
+    );
+    foreach ($lists as $id => $list) {
+      $form['subscriptions'][$id] = array(
+        '#type' => 'checkbox',
+        '#title' => check_plain($list),
+        '#default_value' => in_array($id, $subscriptions),
+      );      
+    }
+    $form['submit'] = array(
+      '#type' => 'submit',
+      '#value' => t('Save'),
+      //'#submit' => array('athens_events_clear_cache'),
+    );     
+    return $form;
+  }
+  else {
+    drupal_set_message(t('No existing email lists were found. Please try again later.'), 'error');
+    drupal_goto("user/{$user->uid}/edit");
+  }
+}
+
+/*
+ * Handle the user email list subscription form submission.
+ */
+function contactology_subscription_form_submit($form, $form_values) {
+  $user = $form['#parameters'][2];
+  $subscriptions = $_SESSION['contactology_subscriptions'];
+  unset($_SESSION['contactology_subscriptions']);
+  $update_subscriptions = FALSE; // Only send a request to Contactology if the subscriptions have been changed.
+  $new_subscriptions = array();
+  $success = TRUE;
+  foreach ($form_values['values'] as $list_id => $subscribe) {
+    if (is_numeric($list_id)) {
+      $is_subscribed = in_array($list_id, $subscriptions);
+      if ($is_subscribed != $subscribe) {
+        $update_subscriptions = TRUE;
+      }
+      if ($subscribe) {
+        $new_subscriptions[] = $list_id;
+      }
+    }
+  }
+  if ($update_subscriptions) {
+    try {
+      contactology_update_subscriptions($user->mail, $new_subscriptions);
+    }
+    catch (Exception $e) {
+      $success = FALSE;
+      drupal_set_message(t('Unable to update email subscriptions. Please try again later.'), 'error');
+      drupal_goto("user/{$user->uid}/edit");
+    }
+    if ($success) {
+      drupal_set_message(t('Updated email subscriptions.'));
+    }
+  }
+  drupal_goto("user/{$user->uid}/edit");
+}
+
+/**
+ * Implementation of hook_init().
+ */
+function contactology_init() {
+  // Autoload the Contactology class when needed.
+  spl_autoload_register('contactology_autoload');
+}
+
+/**
+ * Autoload the Contactology class when needed.
+ */
+function contactology_autoload($class_name) {
+  if (in_array($class_name, array('Contactology')) && $path = contactology_wrapper_path()) {
+    include_once($path . '/class.Contactology.php');
+  }
+}
+
+/**
+ * Return the path to the Contactology wrapper library (class.Contactology.php).
+ *
+ * This function and the autoload function above were copied from the media_brightcove module.
+ * If variable_get('contactology_wrapper_path') has not yet been set, then
+ * this will attempt to autodiscover the path if the class.Contactology.php file exists
+ * within sites/all/libraries/* or sites/example.com/libraries/*. It will also
+ * set the path to variable_get('contactology_wrapper_path').
+ *
+ * The library is available from http://www.contactology.com/wrappers/class.Contactology.php.
+ *
+ * @param boolean $reset
+ *  (Optional) If TRUE, then reset the variable and attempt a new autodiscovery.
+ * @return string
+ *  The path to the class.Contactology.php file.
+ */
+function contactology_wrapper_path($reset = FALSE) {
+  static $path;
+  if (!isset($path) || $reset) {
+    if (!($path = variable_get('contactology_wrapper_path', '')) || $reset) {
+      $files = drupal_system_listing('^class\.Contactology\.php$', 'libraries', 'basename', 0);
+      if (isset($files['class.Contactology.php'])) {
+        $path = dirname($files['class.Contactology.php']->filename);
+        variable_set('contactology_wrapper_path', $path);
+      }
+    }
+  }
+  return $path;
+}
+
+/**
+ * Obtain an array containing available email lists from Contactology
+ */
+function contactology_get_lists($reset = FALSE) {
+  static $lists = array();
+  if (!$lists || $reset) {
+    $now = time();
+    if (!$reset && ($cache = cache_get("contactology:lists", 'cache'))
+        && !empty($cache->data)
+        && ($now < $cache->expire)) {
+      $lists =  $cache->data;
+    }
+    else {
+      $contactology = contactology_wrapper_object();
+      try {
+        $results = $contactology->List_Get_Active_Lists(array('type' => 'public', 'sortDir' => 'U', 'sortBy' => 'name'));
+      }
+      catch (Exception $e) {
+        throw $e;
+      }
+      if ($results) {
+        foreach ($results as $result) {
+          $lists[$result['listId']] = $result['name'];
+        }
+        cache_set("contactology:lists", $lists, 'cache', $now + 60*variable_get('contactology_cache_limit', 60));
+      }
+    }
+  }
+  return $lists;
+}
+
+/*
+ * Return an array of Contactology custom fields
+ */
+function contactology_get_custom_fields() {
+  static $fields = array();
+  if (empty($fields)) {
+    $contactology = contactology_wrapper_object();
+   try {
+      $results = $contactology->CustomField_Get_All();
+    }
+    catch (Exception $e) {
+      throw $e;
+    }
+    foreach ($results as $result) {
+      $fields[$result['fieldId']] = $result['fieldName'];
+    }
+  }
+  return $fields;
+}
+
+/**
+ * Get email list subscriptions for a user.
+ */
+function contactology_get_subscriptions($email) {
+  static $lists = array();
+  if (empty($lists[$email])) {
+    $lists[$email] = array();
+    $contactology = contactology_wrapper_object();
+    try {
+      $results = $contactology->Contact_Get_Subscriptions($email);
+    }
+    catch (Exception $e) {
+      // If this user does not exist as a contact in Contactology, ignore the thrown exception.
+      if (!($e->getCode() == 601 && strpos($e->getMessage(), 'no contact'))) {
+        throw $e;
+      }
+    }
+    if ($results) {
+      $lists[$email] = $results;      
+    }
+  }
+  return $lists[$email];
+}
+
+/*
+ * Update the email subscriptions for a user in Contactology.
+ */
+function contactology_update_subscriptions($email, $list_ids) {
+  $subscriptions = array();
+  $contactology = contactology_wrapper_object();
+  // The Contactology REST server reports an error when the listIds parameter is an empty array.
+  // To avoid this error, we add a list ID of 0 to the $list_ids array when the $list_ids array is empty.
+  if (empty($list_ids)) {
+    $list_ids = array(0);
+  }
+  try {
+    $contact = $contactology->Contact_Get($email);
+  }
+  catch (Exception $e) {
+    throw $e;
+  }
+  // If this user does not exist as a contact in Contactology, add them as a contact.
+  if (!$contact['contactId']) {
+    try {
+      $contact = $contactology->Contact_Add_Email($email);
+    }
+    catch (Exception $e) {
+      throw $e;
+    }    
+  }
+  try {
+    $subscriptions = $contactology->Contact_Set_Subscriptions($email, $list_ids);
+  }
+  catch (Exception $e) {
+    throw $e;
+  }
+  return $subscriptions;
+}
+
+/*
+ * Return an array containing the user fields in Drupal that may be mapped
+ * to custom fields in Contactology.
+ */
+function contactology_get_drupal_fields() {
+  static $fields = array();
+  if (empty($fields)) {
+    $fields = array(
+      'uid' => t('User: User ID'),
+      'name' => t('User: Username'),
+      //'pass' => t('User: Password'),
+      'mail' => t('User: Email address'),
+      'created' => t('User: Account created'),
+      'access' => t('User: Account last accessed'),
+      'login' => t('User: Last logged in'),
+      //'roles' => t('User: Roles'),
+      'status' => t('User: Status'),
+    );
+    $profile = db_query("SELECT title, name FROM {profile_fields} ORDER BY title");
+    while ($field = db_fetch_object($profile)) {
+      $fields[$field->name] = t('Profile: @title', array('@title' => $field->title));
+    }
+  }
+  return $fields;
+}
+
+/*
+ * Convert a Drupal date to a Contactology year.
+ */
+function contactology_convert_date_to_year($date = array()) {
+  $year = 0;
+  if ($date && is_array($date) && isset($date['year']) && $date['year']) {
+    $year = $date['year'];
+  }
+  return $year;
+}
+
+/*
+ * Convert a single-letter gender to the full name of the gender
+ * M => Male and F => Female
+ */
+function contactology_convert_m_f_to_male_female($gender = '') {
+  if ($gender == 'M') {
+    $gender = 'Male';
+  }
+  else if ($gender == 'F') {
+    $gender = 'Female';
+  }
+  return $gender;
+}
+
+/**
+ * Implementation of hook_theme().
+ */
+function contactology_theme() {
+  return array(
+    'contactology_custom_field_settings' => array(
+      'arguments' => array('form' => NULL),
+      'function' => 'theme_contactology_custom_field_settings',
+    ),
+  );
+}
+
+function contactology_wrapper_object() {
+  static $contactology = NULL;
+  if (!$contactology) {
+    contactology_autoload('Contactology');
+    module_load_include('lib.php', 'contactology');
+    $contactology = new ContactologyAPI(variable_get('contactology_api_key', ''), TRUE);
+  }
+  return $contactology;  
+}

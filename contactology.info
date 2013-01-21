@@ -1,0 +1,8 @@
+; $Id: //sms/modules/morris/contactology/6/v2012.1/contactology.info#2 $
+name = Contactology
+description = Connects to the Contactology REST API to subscribe users to email lists.
+version = 6.x-1.0
+package = "SMS"
+;dependencies[] = profile 
+;dependencies[] = drupal_queue 
+core = 6.x

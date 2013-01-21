@@ -1,0 +1,27 @@
+<?php
+// $Id: //sms/modules/morris/contactology/6/v2012.1/contactology.install#2 $
+
+/*
+ * Implementation of hook_install
+ */
+function contactology_install() {
+  // Disable and uninstall the contactology_nusoap module.
+  if (module_exists('contactology_nusoap')) {
+    module_disable(array('contactology_nusoap'));
+    drupal_uninstall_module('contactology_nusoap');
+  }
+}
+
+/*
+ * Implementation of hook_uninstall
+ */
+function contactology_uninstall() {
+  // Delete some variables created by this module. We normally use the variable_del function, but doing it this way is faster.
+  global $conf;
+  $result = db_query("SELECT name FROM {variable} WHERE name LIKE 'contactology_%'");
+  while ($name = db_result($result)) {
+    unset($conf[$name]);
+  }
+  db_query("DELETE FROM {variable} WHERE name LIKE 'contactology_%'");
+  cache_clear_all('variables', 'cache');  
+}
